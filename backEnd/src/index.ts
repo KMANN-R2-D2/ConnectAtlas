@@ -11,7 +11,9 @@ const app = express();
 
 // Security middleware
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+  origin: 'https://your-frontend-url.onrender.com'
+}))
 app.use(express.json());
 
 // Rate limiting
