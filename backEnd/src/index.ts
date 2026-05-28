@@ -12,8 +12,10 @@ const app = express();
 // Security middleware
 app.use(helmet());
 app.use(cors({
-  origin: 'https://your-frontend-url.onrender.com'
-}))
+  origin: ['https://connectatlas.onrender.com', 'http://localhost:5173'],
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 app.use(express.json());
 
 // Rate limiting
