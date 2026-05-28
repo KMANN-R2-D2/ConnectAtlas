@@ -1,0 +1,427 @@
+import { Request, Response } from "express";
+import OpenAI from "openai";
+import { config } from "../config/env.js";
+import { UCalgaryService } from "../services/ucalgary.service.js";
+import { AHSService } from "../services/ahs.service.js";
+import { StudentUnionService } from "../services/studentUnion.service.js";
+
+const openai = new OpenAI({ apiKey: config.openaiApiKey });
+const ucalgaryService = new UCalgaryService();
+const ahsService = new AHSService();
+const suService = new StudentUnionService();
+
+// ─── Intent → hard-coded resource category map ───────────────────────────────
+// Intents that map to a known hard-coded resource avoid an AI web search entirely.
+// Only "unknown" intent falls through to a live search.
+
+const RESOURCE_INTENTS = [
+  "mental_health",
+  "physical_health",
+  "sexual_health",
+  "crisis",
+  "financial_aid",
+  "legal_help",
+  "campus_safety",
+  "food_security",
+  "housing",
+  "insurance",
+  "addiction",
+  "sexual_violence",
+] as const;
+
+type ResourceIntent = (typeof RESOURCE_INTENTS)[number] | "general" | "unknown";
+
+// ─── System prompt ────────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `You are a compassionate support assistant for University of Calgary (UCalgary) students.
+
+Your role:
+1. Provide accurate, empathetic responses to students facing health, financial, legal, safety, or personal challenges.
+2. Direct students to the most relevant UCalgary, AHS, or Student Union resources.
+3. NEVER diagnose illness or replace professional medical, legal, or financial advice.
+4. Be warm, non-judgmental, and give concrete next steps.
+
+When resources are provided in context, reference them specifically (names, phone numbers, websites).
+If the student seems to be in crisis, always prioritize safety resources first.
+
+Key always-available emergency numbers:
+- Campus Security: 403-220-5333 (24/7)
+- Distress Centre: 403-266-4357 (24/7)
+- Suicide/Crisis Line: 988 (24/7, call or text)
+- Emergency: 911`;
+
+// ─── Controller ───────────────────────────────────────────────────────────────
+
+export class ChatbotController {
+  async chat(req: Request, res: Response) {
+    try {
+      const { message, conversationHistory } = req.body;
+
+      if (!message) {
+        return res.status(400).json({ error: "Message is required" });
+      }
+
+      if (!config.openaiApiKey) {
+        return res.status(500).json({ error: "OpenAI API key not configured" });
+      }
+
+      const intent = this.detectIntent(message);
+      console.log("🎯 Intent:", intent);
+
+      // Try hard-coded resources first — only call AI search if truly unknown
+      const { resources, usedSearch } = await this.resolveResources(intent, message);
+      console.log(`📚 Resources resolved (search used: ${usedSearch})`);
+
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+        { role: "system", content: SYSTEM_PROMPT },
+      ];
+
+      if (resources) {
+        messages.push({
+          role: "system",
+          content: `Relevant resources for this student's issue:\n${JSON.stringify(resources, null, 2)}`,
+        });
+      }
+
+      if (conversationHistory && Array.isArray(conversationHistory)) {
+        messages.push(...conversationHistory);
+      }
+
+      messages.push({ role: "user", content: message });
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages,
+        temperature: 0.7,
+        max_tokens: 1000,
+      });
+
+      const reply = completion.choices[0].message.content;
+
+      res.json({
+        reply,
+        intent,
+        usedSearch,
+        resources,
+        conversationHistory: [
+          ...messages.slice(resources ? 2 : 1).filter((m) => m.role !== "system"),
+          { role: "assistant", content: reply },
+        ],
+      });
+    } catch (error: any) {
+      console.error("❌ Chat error:", error);
+
+      if (error.status === 429) {
+        return res.status(429).json({ error: "Rate limit exceeded. Please try again later." });
+      }
+      if (error.status === 401) {
+        return res.status(500).json({ error: "API authentication failed." });
+      }
+      if (error.code === "insufficient_quota") {
+        return res.status(500).json({ error: "OpenAI account has insufficient credits." });
+      }
+
+      res.status(500).json({ error: "Failed to process chat request", details: error.message });
+    }
+  }
+
+  // ─── Intent detection ───────────────────────────────────────────────────────
+
+  private detectIntent(message: string): ResourceIntent {
+    const m = message.toLowerCase();
+
+    // Crisis — always check first
+    if (
+      m.includes("suicid") || m.includes("kill myself") || m.includes("end my life") ||
+      m.includes("hurt myself") || m.includes("self-harm") || m.includes("crisis") ||
+      m.includes("overdose")
+    ) return "crisis";
+
+    // Mental health
+    if (
+      m.includes("anxious") || m.includes("anxiety") || m.includes("depressed") ||
+      m.includes("depression") || m.includes("overwhelmed") || m.includes("mental health") ||
+      m.includes("counsell") || m.includes("therapy") || m.includes("therapist") ||
+      m.includes("stress") || m.includes("burnout") || m.includes("loneli") ||
+      m.includes("panic attack") || m.includes("ptsd") || m.includes("trauma")
+    ) return "mental_health";
+
+    // Addiction
+    if (
+      m.includes("addiction") || m.includes("substance") || m.includes("alcohol") ||
+      m.includes("drugs") || m.includes("drinking") || m.includes("recovery")
+    ) return "addiction";
+
+    // Sexual violence
+    if (
+      m.includes("sexual assault") || m.includes("sexual violence") || m.includes("harassment") ||
+      m.includes("assault") || m.includes("rape") || m.includes("survivor")
+    ) return "sexual_violence";
+
+    // Sexual health
+    if (
+      m.includes("sti") || m.includes("std") || m.includes("birth control") ||
+      m.includes("sexual health") || m.includes("condom") || m.includes("pregnancy") ||
+      m.includes("contraception")
+    ) return "sexual_health";
+
+    // Physical health
+    if (
+      m.includes("sick") || m.includes("fever") || m.includes("cold") || m.includes("flu") ||
+      m.includes("doctor") || m.includes("prescription") || m.includes("vaccine") ||
+      m.includes("medical") || m.includes("injury") || m.includes("pain") ||
+      m.includes("health clinic") || m.includes("walk-in")
+    ) return "physical_health";
+
+    // Financial
+    if (
+      m.includes("financ") || m.includes("money") || m.includes("afford") ||
+      m.includes("bursary") || m.includes("loan") || m.includes("debt") ||
+      m.includes("tuition") || m.includes("broke") || m.includes("poor") ||
+      m.includes("scholarship") || m.includes("emergency fund") || m.includes("hardship")
+    ) return "financial_aid";
+
+    // Insurance
+    if (
+      m.includes("insurance") || m.includes("studentcare") || m.includes("health plan") ||
+      m.includes("dental") || m.includes("coverage") || m.includes("benefits")
+    ) return "insurance";
+
+    // Legal
+    if (
+      m.includes("legal") || m.includes("lawyer") || m.includes("court") ||
+      m.includes("law ") || m.includes("tenant") || m.includes("landlord") ||
+      m.includes("evict") || m.includes("contract") || m.includes("criminal") ||
+      m.includes("immigration") || m.includes("sue") || m.includes("rights")
+    ) return "legal_help";
+
+    // Campus safety
+    if (
+      m.includes("safe") || m.includes("danger") || m.includes("threat") ||
+      m.includes("scared") || m.includes("stalking") || m.includes("follow") ||
+      m.includes("campus security") || m.includes("safe walk") || m.includes("violence") ||
+      m.includes("police")
+    ) return "campus_safety";
+
+    // Housing
+    if (
+      m.includes("housing") || m.includes("rent") || m.includes("apartment") ||
+      m.includes("evict") || m.includes("homeless") || m.includes("shelter") ||
+      m.includes("roommate") || m.includes("landlord") || m.includes("lease")
+    ) return "housing";
+
+    // Food
+    if (
+      m.includes("food") || m.includes("hungry") || m.includes("groceries") ||
+      m.includes("meal") || m.includes("eat") || m.includes("food bank") ||
+      m.includes("food insecurity") || m.includes("starving")
+    ) return "food_security";
+
+    // General known question — AI can handle with base system prompt
+    return "general";
+  }
+
+  // ─── Resource resolution ────────────────────────────────────────────────────
+  // Returns hard-coded resources for known intents.
+  // Only "unknown" intents trigger a web search (to save tokens).
+
+  private async resolveResources(
+    intent: ResourceIntent,
+    message: string
+  ): Promise<{ resources: any; usedSearch: boolean }> {
+    try {
+      const ucWellness = ucalgaryService.getWellnessResourcesStatic();
+      const ucGeneral = ucalgaryService.getGeneralResourcesStatic();
+      const suWellness = suService.getWellnessResources();
+      const suGeneral = suService.getGeneralResources();
+      const ahs = ahsService.getResources();
+
+      switch (intent) {
+        case "crisis":
+          return {
+            usedSearch: false,
+            resources: {
+              emergency: "911",
+              campusSecurity: ucWellness.campusSecurity,
+              distressCentre: ahs.distressCentre,
+              suicideLine: ahs.suicideCrisisHelpline,
+              mentalHealthLine: ahs.mentalHealthHelpLine,
+              wellnessCentre: ucWellness.mentalHealth,
+            },
+          };
+
+        case "mental_health":
+          return {
+            usedSearch: false,
+            resources: {
+              wellnessCentre: ucWellness.mentalHealth,
+              peerSupport: suWellness.peerSupport,
+              insurance: suWellness.insurance,
+              distressCentre: ahs.distressCentre,
+              mentalHealthLine: ahs.mentalHealthHelpLine,
+            },
+          };
+
+        case "addiction":
+          return {
+            usedSearch: false,
+            resources: {
+              wellnessCentre: ucWellness.mentalHealth,
+              addictionLine: ahs.addictionHelpLine,
+              distressCentre: ahs.distressCentre,
+            },
+          };
+
+        case "sexual_violence":
+          return {
+            usedSearch: false,
+            resources: {
+              sexualViolenceSupport: ucWellness.sexualViolenceSupport,
+              ccasa: ucGeneral.campusSafety.resources.find(
+                (r: any) => r.name.includes("Sexual Abuse")
+              ),
+              campusSecurity: ucWellness.campusSecurity,
+              distressCentre: ahs.distressCentre,
+            },
+          };
+
+        case "sexual_health":
+          return {
+            usedSearch: false,
+            resources: {
+              medicalClinic: ucWellness.medicalClinic,
+              calgaryFamilyServices: ahs.calgaryFamilyServices,
+            },
+          };
+
+        case "physical_health":
+          return {
+            usedSearch: false,
+            resources: {
+              medicalClinic: ucWellness.medicalClinic,
+              healthLink: ahs.healthLink,
+              urgentCare: ahs.urgentCare,
+            },
+          };
+
+        case "financial_aid":
+          return {
+            usedSearch: false,
+            resources: {
+              ucalgaryEmergencyAid: ucGeneral.financialAid,
+              suHardshipFund: suGeneral.hardshipFund,
+              urgentSupport: ucGeneral.urgentSupport,
+            },
+          };
+
+        case "insurance":
+          return {
+            usedSearch: false,
+            resources: {
+              studentCare: suWellness.insurance,
+              wellnessFreeServices: {
+                note: "UCalgary Student Wellness Services counselling is FREE — no insurance needed",
+                phone: ucWellness.mentalHealth.phone,
+                website: ucWellness.mentalHealth.website,
+              },
+            },
+          };
+
+        case "legal_help":
+          return {
+            usedSearch: false,
+            resources: {
+              legalHelp: ucGeneral.legalHelp,
+              advocacy: suGeneral.advocacy,
+            },
+          };
+
+        case "campus_safety":
+          return {
+            usedSearch: false,
+            resources: {
+              campusSafety: ucGeneral.campusSafety,
+              campusSecurity: ucWellness.campusSecurity,
+            },
+          };
+
+        case "housing":
+          return {
+            usedSearch: false,
+            resources: {
+              housingHelp: ucGeneral.housingHelp,
+              offCampusHousing: suGeneral.offCampusHousing,
+              campusSafety: ucGeneral.campusSafety.resources.find(
+                (r: any) => r.name.includes("Awo Taan")
+              ),
+            },
+          };
+
+        case "food_security":
+          return {
+            usedSearch: false,
+            resources: {
+              foodBank: suGeneral.foodBank,
+              foodHub: ucGeneral.foodSecurity,
+              denMeals: suGeneral.denAffordableMeals,
+            },
+          };
+
+        case "general":
+          // Return a light context — enough for AI to give a helpful response
+          return {
+            usedSearch: false,
+            resources: {
+              wellnessCentre: { phone: ucWellness.mentalHealth.phone, website: ucWellness.mentalHealth.website },
+              urgentSupport: ucGeneral.urgentSupport,
+              campusSecurity: ucWellness.campusSecurity,
+            },
+          };
+
+        default:
+          // Truly unknown — fall back to AI web search
+          return await this.searchForResources(message);
+      }
+    } catch (error) {
+      console.error("Error resolving resources:", error);
+      return { resources: null, usedSearch: false };
+    }
+  }
+
+  // ─── AI web search fallback (only for unknown intents) ────────────────────
+
+  private async searchForResources(
+    message: string
+  ): Promise<{ resources: any; usedSearch: boolean }> {
+    try {
+      const searchCompletion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a resource finder for UCalgary students. Given a student's problem, search for the most relevant UCalgary, AHS, or Calgary-area support resources. Return a brief JSON object with resource names, phone numbers, and websites. Be concise.",
+          },
+          {
+            role: "user",
+            content: `Find relevant resources for a UCalgary student with this issue: "${message}"`,
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 400,
+      });
+
+      const content = searchCompletion.choices[0].message.content ?? "";
+      try {
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const resources = jsonMatch ? JSON.parse(jsonMatch[0]) : { note: content };
+        return { resources, usedSearch: true };
+      } catch {
+        return { resources: { note: content }, usedSearch: true };
+      }
+    } catch (error) {
+      console.error("Search fallback failed:", error);
+      return { resources: null, usedSearch: false };
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "cachedAt": "2025-11-27T04:17:59.973Z",
+  "data": {
+    "mentalHealth": {
+      "name": "Student Wellness Services - Mental Health",
+      "phone": "403-210-9355",
+      "email": "wellness@ucalgary.ca",
+      "website": "https://www.ucalgary.ca/wellness-services/services/mental-health-services",
+      "services": [
+        "Free short-term counselling (up to 10 sessions)",
+        "Crisis support",
+        "Group therapy",
+        "Wellness workshops"
+      ],
+      "hours": "Monday-Friday, 8:30 AM - 4:30 PM",
+      "location": "MacEwan Student Centre, Room 370",
+      "bookingInfo": "Book online or call to schedule"
+    },
+    "medicalClinic": {
+      "name": "Student Medical Clinic",
+      "phone": "403-210-9355",
+      "website": "https://www.ucalgary.ca/wellness-services/services/medical-services",
+      "services": [
+        "Walk-in appointments",
+        "STI testing and treatment",
+        "Birth control counselling",
+        "Vaccinations",
+        "Prescription renewals"
+      ],
+      "hours": "Monday-Friday, 9:00 AM - 4:00 PM",
+      "location": "MacEwan Student Centre, Room 370"
+    },
+    "crisis": {
+      "name": "Campus Security Emergency",
+      "phone": "403-220-5333",
+      "available": "24/7",
+      "description": "For immediate emergencies on campus"
+    },
+    "lastUpdated": "2025-11-27T04:17:59.973Z"
+  }
+}
