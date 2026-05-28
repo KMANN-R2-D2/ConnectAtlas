@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { sendMessage } from './api/chat'
 import type { Resource } from './api/chat'
+import ReactMarkdown from 'react-markdown'
 import './App.css'
 
 type View = 'chat' | 'health' | 'resources'
@@ -474,7 +475,9 @@ export default function App() {
                   <div key={i} className={`message-row ${msg.role}`}>
                     {msg.role === 'assistant' && <div className="avatar"><LogoSVG /></div>}
                     <div className="bubble-wrap">
-                      <div className={`bubble ${msg.role}`}>{msg.text}</div>
+                      <div className={`bubble ${msg.role}`}>
+                        <ReactMarkdown>{msg.text}</ReactMarkdown>
+                      </div>
                       {chips.length > 0 && (
                         <div className="resources">
                           <div className="resources-label">📎 Helpful Resources</div>
