@@ -1,18 +1,14 @@
 import { Request, Response } from "express";
-import OpenAI from "openai";
 import { config } from "../config/env.js";
 import { UCalgaryService } from "../services/ucalgary.service.js";
 import { AHSService } from "../services/ahs.service.js";
 import { StudentUnionService } from "../services/studentUnion.service.js";
 
-const openai = new OpenAI({ apiKey: config.openaiApiKey });
 const ucalgaryService = new UCalgaryService();
 const ahsService = new AHSService();
 const suService = new StudentUnionService();
 
 // ─── Intent → hard-coded resource category map ───────────────────────────────
-// Intents that map to a known hard-coded resource avoid an AI web search entirely.
-// Only "unknown" intent falls through to a live search.
 
 const RESOURCE_INTENTS = [
   "mental_health",
@@ -50,6 +46,75 @@ Key always-available emergency numbers:
 - Suicide/Crisis Line: 988 (24/7, call or text)
 - Emergency: 911`;
 
+// ─── LLM caller — tries Ollama first, falls back to OpenAI ───────────────────
+
+interface Message {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+async function callLLM(messages: Message[], maxTokens = 1000): Promise<string> {
+  const ollamaUrl = config.ollamaUrl;
+
+  // Try Ollama first if configured
+  if (ollamaUrl) {
+    try {
+      console.log("🤖 Trying Ollama...");
+      const response = await fetch(`${ollamaUrl}/api/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: config.ollamaModel || "gemma3:4b",
+          messages,
+          stream: false,
+          options: {
+            temperature: 0.7,
+            num_predict: maxTokens,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Ollama responded with status ${response.status}`);
+      }
+
+      const data = await response.json() as { message?: { content?: string } };
+      const reply = data.message?.content;
+
+      if (!reply) throw new Error("Empty response from Ollama");
+
+      console.log("✅ Ollama responded successfully");
+      return reply;
+    } catch (error: any) {
+      console.warn("⚠️ Ollama unavailable, falling back to OpenAI:", error.message);
+    }
+  }
+
+  // Fall back to OpenAI
+  if (!config.openaiApiKey) {
+    throw new Error("Neither Ollama nor OpenAI is configured");
+  }
+
+  console.log("🤖 Using OpenAI fallback...");
+  const { default: OpenAI } = await import("openai");
+  const openai = new OpenAI({ apiKey: config.openaiApiKey });
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages,
+    temperature: 0.7,
+    max_tokens: maxTokens,
+  });
+
+  const reply = completion.choices[0].message.content;
+  if (!reply) throw new Error("Empty response from OpenAI");
+
+  console.log("✅ OpenAI responded successfully");
+  return reply;
+}
+
 // ─── Controller ───────────────────────────────────────────────────────────────
 
 export class ChatbotController {
@@ -61,18 +126,17 @@ export class ChatbotController {
         return res.status(400).json({ error: "Message is required" });
       }
 
-      if (!config.openaiApiKey) {
-        return res.status(500).json({ error: "OpenAI API key not configured" });
+      if (!config.ollamaUrl && !config.openaiApiKey) {
+        return res.status(500).json({ error: "No LLM configured. Set OLLAMA_URL or OPENAI_API_KEY." });
       }
 
       const intent = this.detectIntent(message);
       console.log("🎯 Intent:", intent);
 
-      // Try hard-coded resources first — only call AI search if truly unknown
       const { resources, usedSearch } = await this.resolveResources(intent, message);
       console.log(`📚 Resources resolved (search used: ${usedSearch})`);
 
-      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      const messages: Message[] = [
         { role: "system", content: SYSTEM_PROMPT },
       ];
 
@@ -89,14 +153,7 @@ export class ChatbotController {
 
       messages.push({ role: "user", content: message });
 
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages,
-        temperature: 0.7,
-        max_tokens: 1000,
-      });
-
-      const reply = completion.choices[0].message.content;
+      const reply = await callLLM(messages);
 
       res.json({
         reply,
@@ -130,14 +187,12 @@ export class ChatbotController {
   private detectIntent(message: string): ResourceIntent {
     const m = message.toLowerCase();
 
-    // Crisis — always check first
     if (
       m.includes("suicid") || m.includes("kill myself") || m.includes("end my life") ||
       m.includes("hurt myself") || m.includes("self-harm") || m.includes("crisis") ||
       m.includes("overdose")
     ) return "crisis";
 
-    // Mental health
     if (
       m.includes("anxious") || m.includes("anxiety") || m.includes("depressed") ||
       m.includes("depression") || m.includes("overwhelmed") || m.includes("mental health") ||
@@ -146,26 +201,22 @@ export class ChatbotController {
       m.includes("panic attack") || m.includes("ptsd") || m.includes("trauma")
     ) return "mental_health";
 
-    // Addiction
     if (
       m.includes("addiction") || m.includes("substance") || m.includes("alcohol") ||
       m.includes("drugs") || m.includes("drinking") || m.includes("recovery")
     ) return "addiction";
 
-    // Sexual violence
     if (
       m.includes("sexual assault") || m.includes("sexual violence") || m.includes("harassment") ||
       m.includes("assault") || m.includes("rape") || m.includes("survivor")
     ) return "sexual_violence";
 
-    // Sexual health
     if (
       m.includes("sti") || m.includes("std") || m.includes("birth control") ||
       m.includes("sexual health") || m.includes("condom") || m.includes("pregnancy") ||
       m.includes("contraception")
     ) return "sexual_health";
 
-    // Physical health
     if (
       m.includes("sick") || m.includes("fever") || m.includes("cold") || m.includes("flu") ||
       m.includes("doctor") || m.includes("prescription") || m.includes("vaccine") ||
@@ -173,7 +224,6 @@ export class ChatbotController {
       m.includes("health clinic") || m.includes("walk-in")
     ) return "physical_health";
 
-    // Financial
     if (
       m.includes("financ") || m.includes("money") || m.includes("afford") ||
       m.includes("bursary") || m.includes("loan") || m.includes("debt") ||
@@ -181,13 +231,11 @@ export class ChatbotController {
       m.includes("scholarship") || m.includes("emergency fund") || m.includes("hardship")
     ) return "financial_aid";
 
-    // Insurance
     if (
       m.includes("insurance") || m.includes("studentcare") || m.includes("health plan") ||
       m.includes("dental") || m.includes("coverage") || m.includes("benefits")
     ) return "insurance";
 
-    // Legal
     if (
       m.includes("legal") || m.includes("lawyer") || m.includes("court") ||
       m.includes("law ") || m.includes("tenant") || m.includes("landlord") ||
@@ -195,7 +243,6 @@ export class ChatbotController {
       m.includes("immigration") || m.includes("sue") || m.includes("rights")
     ) return "legal_help";
 
-    // Campus safety
     if (
       m.includes("safe") || m.includes("danger") || m.includes("threat") ||
       m.includes("scared") || m.includes("stalking") || m.includes("follow") ||
@@ -203,27 +250,22 @@ export class ChatbotController {
       m.includes("police")
     ) return "campus_safety";
 
-    // Housing
     if (
       m.includes("housing") || m.includes("rent") || m.includes("apartment") ||
       m.includes("evict") || m.includes("homeless") || m.includes("shelter") ||
       m.includes("roommate") || m.includes("landlord") || m.includes("lease")
     ) return "housing";
 
-    // Food
     if (
       m.includes("food") || m.includes("hungry") || m.includes("groceries") ||
       m.includes("meal") || m.includes("eat") || m.includes("food bank") ||
       m.includes("food insecurity") || m.includes("starving")
     ) return "food_security";
 
-    // General known question — AI can handle with base system prompt
     return "general";
   }
 
   // ─── Resource resolution ────────────────────────────────────────────────────
-  // Returns hard-coded resources for known intents.
-  // Only "unknown" intents trigger a web search (to save tokens).
 
   private async resolveResources(
     intent: ResourceIntent,
@@ -277,9 +319,6 @@ export class ChatbotController {
             usedSearch: false,
             resources: {
               sexualViolenceSupport: ucWellness.sexualViolenceSupport,
-              ccasa: ucGeneral.campusSafety.resources.find(
-                (r: any) => r.name.includes("Sexual Abuse")
-              ),
               campusSecurity: ucWellness.campusSecurity,
               distressCentre: ahs.distressCentre,
             },
@@ -351,9 +390,6 @@ export class ChatbotController {
             resources: {
               housingHelp: ucGeneral.housingHelp,
               offCampusHousing: suGeneral.offCampusHousing,
-              campusSafety: ucGeneral.campusSafety.resources.find(
-                (r: any) => r.name.includes("Awo Taan")
-              ),
             },
           };
 
@@ -368,7 +404,6 @@ export class ChatbotController {
           };
 
         case "general":
-          // Return a light context — enough for AI to give a helpful response
           return {
             usedSearch: false,
             resources: {
@@ -379,7 +414,6 @@ export class ChatbotController {
           };
 
         default:
-          // Truly unknown — fall back to AI web search
           return await this.searchForResources(message);
       }
     } catch (error) {
@@ -388,30 +422,24 @@ export class ChatbotController {
     }
   }
 
-  // ─── AI web search fallback (only for unknown intents) ────────────────────
+  // ─── AI search fallback for unknown intents ───────────────────────────────
 
   private async searchForResources(
     message: string
   ): Promise<{ resources: any; usedSearch: boolean }> {
     try {
-      const searchCompletion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a resource finder for UCalgary students. Given a student's problem, search for the most relevant UCalgary, AHS, or Calgary-area support resources. Return a brief JSON object with resource names, phone numbers, and websites. Be concise.",
-          },
-          {
-            role: "user",
-            content: `Find relevant resources for a UCalgary student with this issue: "${message}"`,
-          },
-        ],
-        temperature: 0.3,
-        max_tokens: 400,
-      });
+      const content = await callLLM([
+        {
+          role: "system",
+          content:
+            "You are a resource finder for UCalgary students. Given a student's problem, find the most relevant UCalgary, AHS, or Calgary-area support resources. Return ONLY a valid JSON object with resource names, phone numbers, and websites. No extra text.",
+        },
+        {
+          role: "user",
+          content: `Find relevant resources for a UCalgary student with this issue: "${message}"`,
+        },
+      ], 400);
 
-      const content = searchCompletion.choices[0].message.content ?? "";
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         const resources = jsonMatch ? JSON.parse(jsonMatch[0]) : { note: content };
