@@ -1,14 +1,14 @@
 import { Request, Response } from "express";
+import OpenAI from "openai";
 import { config } from "../config/env.js";
 import { UCalgaryService } from "../services/ucalgary.service.js";
 import { AHSService } from "../services/ahs.service.js";
 import { StudentUnionService } from "../services/studentUnion.service.js";
 
+const openai = new OpenAI({ apiKey: config.openaiApiKey });
 const ucalgaryService = new UCalgaryService();
 const ahsService = new AHSService();
 const suService = new StudentUnionService();
-
-// ─── Intent → hard-coded resource category map ───────────────────────────────
 
 const RESOURCE_INTENTS = [
   "mental_health",
@@ -27,8 +27,6 @@ const RESOURCE_INTENTS = [
 
 type ResourceIntent = (typeof RESOURCE_INTENTS)[number] | "general" | "unknown";
 
-// ─── System prompt ────────────────────────────────────────────────────────────
-
 const SYSTEM_PROMPT = `You are a compassionate support assistant for University of Calgary (UCalgary) students.
 
 Your role:
@@ -46,77 +44,6 @@ Key always-available emergency numbers:
 - Suicide/Crisis Line: 988 (24/7, call or text)
 - Emergency: 911`;
 
-// ─── LLM caller — tries Ollama first, falls back to OpenAI ───────────────────
-
-interface Message {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
-async function callLLM(messages: Message[], maxTokens = 1000): Promise<string> {
-  const ollamaUrl = config.ollamaUrl;
-
-  // Try Ollama first if configured
-  if (ollamaUrl) {
-    try {
-      console.log("🤖 Trying Ollama...");
-      const response = await fetch(`${ollamaUrl}/api/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: config.ollamaModel || "gemma3:4b",
-          messages,
-          stream: false,
-          options: {
-            temperature: 0.7,
-            num_predict: maxTokens,
-          },
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Ollama responded with status ${response.status}`);
-      }
-
-      const data = await response.json() as { message?: { content?: string } };
-      const reply = data.message?.content;
-
-      if (!reply) throw new Error("Empty response from Ollama");
-
-      console.log("✅ Ollama responded successfully");
-      return reply;
-    } catch (error: any) {
-      console.warn("⚠️ Ollama unavailable, falling back to OpenAI:", error.message);
-    }
-  }
-
-  // Fall back to OpenAI
-  if (!config.openaiApiKey) {
-    throw new Error("Neither Ollama nor OpenAI is configured");
-  }
-
-  console.log("🤖 Using OpenAI fallback...");
-  const { default: OpenAI } = await import("openai");
-  const openai = new OpenAI({ apiKey: config.openaiApiKey });
-
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages,
-    temperature: 0.7,
-    max_tokens: maxTokens,
-  });
-
-  const reply = completion.choices[0].message.content;
-  if (!reply) throw new Error("Empty response from OpenAI");
-
-  console.log("✅ OpenAI responded successfully");
-  return reply;
-}
-
-// ─── Controller ───────────────────────────────────────────────────────────────
-
 export class ChatbotController {
   async chat(req: Request, res: Response) {
     try {
@@ -126,8 +53,8 @@ export class ChatbotController {
         return res.status(400).json({ error: "Message is required" });
       }
 
-      if (!config.ollamaUrl && !config.openaiApiKey) {
-        return res.status(500).json({ error: "No LLM configured. Set OLLAMA_URL or OPENAI_API_KEY." });
+      if (!config.openaiApiKey) {
+        return res.status(500).json({ error: "OpenAI API key not configured" });
       }
 
       const intent = this.detectIntent(message);
@@ -136,7 +63,7 @@ export class ChatbotController {
       const { resources, usedSearch } = await this.resolveResources(intent, message);
       console.log(`📚 Resources resolved (search used: ${usedSearch})`);
 
-      const messages: Message[] = [
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
         { role: "system", content: SYSTEM_PROMPT },
       ];
 
@@ -153,7 +80,14 @@ export class ChatbotController {
 
       messages.push({ role: "user", content: message });
 
-      const reply = await callLLM(messages);
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages,
+        temperature: 0.7,
+        max_tokens: 1000,
+      });
+
+      const reply = completion.choices[0].message.content;
 
       res.json({
         reply,
@@ -181,8 +115,6 @@ export class ChatbotController {
       res.status(500).json({ error: "Failed to process chat request", details: error.message });
     }
   }
-
-  // ─── Intent detection ───────────────────────────────────────────────────────
 
   private detectIntent(message: string): ResourceIntent {
     const m = message.toLowerCase();
@@ -264,8 +196,6 @@ export class ChatbotController {
 
     return "general";
   }
-
-  // ─── Resource resolution ────────────────────────────────────────────────────
 
   private async resolveResources(
     intent: ResourceIntent,
@@ -422,24 +352,28 @@ export class ChatbotController {
     }
   }
 
-  // ─── AI search fallback for unknown intents ───────────────────────────────
-
   private async searchForResources(
     message: string
   ): Promise<{ resources: any; usedSearch: boolean }> {
     try {
-      const content = await callLLM([
-        {
-          role: "system",
-          content:
-            "You are a resource finder for UCalgary students. Given a student's problem, find the most relevant UCalgary, AHS, or Calgary-area support resources. Return ONLY a valid JSON object with resource names, phone numbers, and websites. No extra text.",
-        },
-        {
-          role: "user",
-          content: `Find relevant resources for a UCalgary student with this issue: "${message}"`,
-        },
-      ], 400);
+      const searchCompletion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a resource finder for UCalgary students. Given a student's problem, search for the most relevant UCalgary, AHS, or Calgary-area support resources. Return a brief JSON object with resource names, phone numbers, and websites. Be concise.",
+          },
+          {
+            role: "user",
+            content: `Find relevant resources for a UCalgary student with this issue: "${message}"`,
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 400,
+      });
 
+      const content = searchCompletion.choices[0].message.content ?? "";
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         const resources = jsonMatch ? JSON.parse(jsonMatch[0]) : { note: content };
