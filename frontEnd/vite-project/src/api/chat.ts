@@ -17,6 +17,7 @@ export interface Resource {
 export interface ChatResponse {
   reply: string
   intent: string
+  provider: string        // add this
   usedSearch: boolean
   resources: Record<string, Resource | Resource[] | string> | null
   conversationHistory: { role: string; content: string }[]
@@ -33,6 +34,7 @@ export async function sendMessage(
     return {
       reply: "Mock response: backend not connected yet.",
       intent: "general",
+      provider: "mock",
       usedSearch: false,
       resources: null,
       conversationHistory: [

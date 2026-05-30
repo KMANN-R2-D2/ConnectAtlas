@@ -143,6 +143,7 @@ export class ChatbotController {
       }
 
       const intent = this.detectIntent(message);
+      console.log(`💬 Message: "${message}"`);
       console.log("🎯 Intent:", intent);
 
       const { resources, usedSearch } = await this.resolveResources(intent, message);

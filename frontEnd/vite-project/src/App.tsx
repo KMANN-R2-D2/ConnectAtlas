@@ -1,217 +1,19 @@
 import { useState, useRef, useEffect } from 'react'
-import { sendMessage } from './api/chat'
-import type { Resource } from './api/chat'
-import ReactMarkdown from 'react-markdown'
+import { sendMessage, fetchHealthWellness, fetchGeneralResources } from './api/chat'
+import type { Resource, HealthWellnessData, GeneralResourcesData } from './api/chat'
 import './App.css'
-
-type View = 'chat' | 'health' | 'resources'
 
 interface Message {
   role: 'user' | 'assistant'
   text: string
   resources?: Record<string, Resource | Resource[] | string> | null
+  provider?: string | null
 }
 
-// ── Static panel data ──────────────────────────────────────────────────────────
+type NavView = 'chat' | 'health' | 'resources'
+type Provider = 'cloudflare' | 'openai' | null
 
-const healthUCalgary = [
-  {
-    name: "Student Wellness Services – Mental Health",
-    badge: { label: "Free", color: "green" },
-    desc: "Free short-term counselling, crisis support, group therapy and wellness workshops for UCalgary students.",
-    phone: "403-210-9355",
-    email: "wellness@ucalgary.ca",
-    location: "MacEwan Student Centre, Room 370",
-    hours: "Mon–Fri, 8:30 AM – 4:30 PM",
-    services: ["Free short-term counselling (up to 10 sessions)", "Crisis support", "Group therapy", "Wellness workshops"],
-    website: "https://www.ucalgary.ca/wellness-services/services/mental-health-services",
-  },
-  {
-    name: "Student Medical Clinic",
-    badge: { label: "Walk-in", color: "blue" },
-    desc: "Walk-in medical care including STI testing, birth control counselling, vaccinations and prescription renewals.",
-    phone: "403-210-9355",
-    location: "MacEwan Student Centre, Room 370",
-    hours: "Mon–Fri, 9:00 AM – 4:00 PM",
-    services: ["Walk-in appointments", "STI testing & treatment", "Birth control counselling", "Vaccinations", "Prescription renewals"],
-    website: "https://www.ucalgary.ca/wellness-services/services/medical-services",
-  },
-  {
-    name: "SU Peer Support Centre",
-    badge: { label: "Free", color: "green" },
-    desc: "Free, confidential one-on-one and group peer support for any student challenge.",
-    services: ["One-on-one peer support", "Group sessions", "Academic stress support"],
-    website: "https://www.su.ucalgary.ca/programs-services/student-support/peer-support/",
-  },
-]
-
-const healthAHS = [
-  {
-    name: "Health Link 811",
-    badge: { label: "24/7", color: "green" },
-    desc: "Speak with a registered nurse anytime for health advice and guidance on whether to seek further care.",
-    phone: "811",
-    website: "https://www.albertahealthservices.ca/assets/healthinfo/link/index.html",
-  },
-  {
-    name: "Mental Health Help Line",
-    badge: { label: "24/7", color: "green" },
-    desc: "24/7 mental health support and crisis intervention from Alberta Health Services.",
-    phone: "1-877-303-2642",
-  },
-  {
-    name: "Addiction Help Line",
-    badge: { label: "24/7", color: "green" },
-    desc: "24/7 confidential support for substance use concerns.",
-    phone: "1-866-332-2322",
-  },
-  {
-    name: "Distress Centre Calgary",
-    badge: { label: "24/7", color: "green" },
-    desc: "24/7 crisis support and suicide prevention for Calgary residents.",
-    phone: "403-266-4357",
-    website: "https://www.distresscentre.com",
-  },
-  {
-    name: "Sheldon M. Chumir Health Centre",
-    badge: { label: "Urgent Care", color: "orange" },
-    desc: "Closest urgent care to campus. Handles urgent care and mental health crisis support.",
-    phone: "403-955-6200",
-    location: "1213 4 St SW, Calgary",
-    hours: "24/7",
-  },
-  {
-    name: "Foothills Medical Centre (ER)",
-    badge: { label: "Emergency", color: "pink" },
-    desc: "Closest emergency room to UCalgary main campus.",
-    phone: "403-944-1110",
-    location: "1403 29 St NW, Calgary",
-  },
-]
-
-const resourcesFinancial = [
-  {
-    name: "Student Financial Aid & Awards",
-    badge: { label: "UCalgary", color: "blue" },
-    desc: "Government student loans, bursaries, scholarships, emergency financial assistance, and tuition payment plans.",
-    phone: "403-210-7625",
-    location: "Hunter Student Commons, Room 220",
-    services: ["Government student loans (Alberta Student Aid)", "UCalgary bursaries", "Emergency financial assistance", "Scholarships & awards", "Tuition payment plans"],
-    website: "https://www.ucalgary.ca/registrar/finances/financial-aid",
-  },
-  {
-    name: "SU Food Bank",
-    badge: { label: "Free · No ID", color: "green" },
-    desc: "Free groceries for students. No ID required, completely confidential. No questions asked.",
-    location: "MacEwan Student Centre, Room 251",
-    hours: "Mon–Fri, 10:00 AM – 4:00 PM",
-    website: "https://www.su.ucalgary.ca/programs-services/student-support/food-bank/",
-  },
-  {
-    name: "StudentCare Health & Dental Plan",
-    badge: { label: "SU Insurance", color: "blue" },
-    desc: "Student insurance: up to $1,500/yr mental health · 80% dental · $200 vision · 80% prescriptions.",
-    phone: "1-866-369-2800",
-    website: "https://www.studentcare.ca/rte/en/UniversityofCalgaryStudentsUnion_Home",
-  },
-]
-
-const resourcesLegal = [
-  {
-    name: "Student Legal Assistance (SLA)",
-    badge: { label: "Free / Pro Bono", color: "green" },
-    desc: "Free legal help from UCalgary law students supervised by lawyers. Civil, criminal and family law matters.",
-    phone: "403-220-6637",
-    location: "Murray Fraser Hall (MFH) 3390",
-    website: "https://slacalgary.com/",
-  },
-  {
-    name: "Student Ombuds Office",
-    badge: { label: "Confidential", color: "blue" },
-    desc: "Confidential, impartial support for academic disputes, conflict resolution and navigating university policies.",
-    website: "https://www.ucalgary.ca/student-services/ombuds",
-  },
-  {
-    name: "SU Student Advocacy",
-    badge: { label: "Free", color: "green" },
-    desc: "Free support for academic appeals, grade disputes and protecting your student rights.",
-    phone: "403-220-6551",
-    website: "https://www.su.ucalgary.ca/programs-services/student-support/student-advocacy/",
-  },
-]
-
-const resourcesSafety = [
-  {
-    name: "Campus Security & Protective Services",
-    badge: { label: "24/7", color: "green" },
-    desc: "Emergency response, Safe Walk program, and general campus safety. Call for a Safe Walk escort at any time.",
-    phone: "403-220-5333",
-    website: "https://www.ucalgary.ca/security",
-  },
-  {
-    name: "Sexual & Gender-Based Violence Support Office",
-    badge: { label: "Confidential", color: "blue" },
-    desc: "Confidential support, safety planning, and reporting guidance for anyone affected by sexual or gender-based violence.",
-    email: "sgbv@ucalgary.ca",
-    location: "MacEwan Student Centre, MSC 452",
-    website: "https://www.ucalgary.ca/sexual-violence-support",
-  },
-  {
-    name: "Office of Diversity, Equity & Protected Disclosure",
-    badge: { label: "UCalgary", color: "blue" },
-    desc: "Handles discrimination, harassment and human rights complaints on campus.",
-    phone: "403-220-4086",
-  },
-]
-
-const resourcesAcademic = [
-  {
-    name: "Chancellor Cuthbertson Student Success Centre",
-    badge: { label: "UCalgary", color: "blue" },
-    desc: "Academic advising, writing assistance, tutoring and study skills workshops.",
-    phone: "403-220-5881",
-    website: "https://www.ucalgary.ca/student-services/student-success",
-  },
-  {
-    name: "Student Accessibility Services",
-    badge: { label: "UCalgary", color: "blue" },
-    desc: "Accommodations and support for students with disabilities or accessibility needs.",
-    phone: "403-220-8237",
-    email: "access@ucalgary.ca",
-    location: "MacEwan Student Centre, MSC 452",
-    website: "https://www.ucalgary.ca/student-services/access",
-  },
-  {
-    name: "Office of the Registrar",
-    badge: { label: "UCalgary", color: "blue" },
-    desc: "Enrolment, course registration, fee payments, transcripts and convocation.",
-    website: "https://www.ucalgary.ca/registrar",
-  },
-]
-
-const resourcesDiversity = [
-  {
-    name: "Women's Resource Centre",
-    badge: { label: "UCalgary", color: "pink" },
-    desc: "Support, programming and advocacy for women and gender-diverse students.",
-    phone: "403-220-8550",
-  },
-  {
-    name: "Q – SU Centre for Sexual and Gender Diversity",
-    badge: { label: "SU", color: "pink" },
-    desc: "Safe space and support for LGBTQ2S+ students at UCalgary.",
-    phone: "403-220-4460",
-    website: "https://www.su.ucalgary.ca/programs-services/student-support/q-centre/",
-  },
-  {
-    name: "Writing Symbols Lodge",
-    badge: { label: "UCalgary", color: "orange" },
-    desc: "Academic, personal and cultural support for First Nations, Métis, and Inuit students.",
-    phone: "403-220-6034",
-  },
-]
-
-// ── Sub-components ─────────────────────────────────────────────────────────────
+// ── Icons ─────────────────────────────────────────────────────────────────────
 
 const LogoSVG = () => (
   <svg width="38" height="38" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -250,134 +52,207 @@ const MoonIcon = () => (
   </svg>
 )
 
-interface CardData {
-  name: string
-  badge?: { label: string; color: string }
-  desc?: string
-  phone?: string
-  email?: string
-  location?: string
-  hours?: string
-  services?: string[]
-  website?: string
-  note?: string
+// ── Provider badge ────────────────────────────────────────────────────────────
+
+const ProviderBadge = ({ provider }: { provider: Provider }) => {
+  if (!provider) return null
+  const isCloudflare = provider === 'cloudflare'
+  return (
+    <span className={`provider-badge ${isCloudflare ? 'provider-badge--cf' : 'provider-badge--oai'}`}>
+      {isCloudflare ? '☁️ Gemma 4' : '🤖 GPT-4o Mini'}
+    </span>
+  )
 }
 
-const badgeClass: Record<string, string> = {
-  blue: 'rc-badge--blue',
-  pink: 'rc-badge--pink',
-  orange: 'rc-badge--orange',
-  green: 'rc-badge--green',
-}
-
-const ResourceCard = ({ card }: { card: CardData }) => (
-  <div className="resource-card">
-    <div className="rc-header">
-      <div className="rc-name">{card.name}</div>
-      {card.badge && (
-        <span className={`rc-badge ${badgeClass[card.badge.color] ?? 'rc-badge--blue'}`}>
-          {card.badge.label}
-        </span>
-      )}
-    </div>
-    {card.desc && <div className="rc-desc">{card.desc}</div>}
-    {card.services && (
-      <ul className="rc-services">
-        {card.services.map((s, i) => <li key={i}>{s}</li>)}
-      </ul>
-    )}
-    {card.note && <div className="rc-note">{card.note}</div>}
-    <div className="rc-meta">
-      {card.hours && <span className={`rc-pill ${card.hours === '24/7' ? 'rc-pill--green' : ''}`}>🕐 {card.hours}</span>}
-      {card.location && <span className="rc-pill">📍 {card.location}</span>}
-    </div>
-    <div className="rc-actions">
-      {card.phone && (
-        <a href={`tel:${card.phone}`} className="rc-action rc-action--phone">📞 {card.phone}</a>
-      )}
-      {card.email && (
-        <a href={`mailto:${card.email}`} className="rc-action rc-action--email">✉️ {card.email}</a>
-      )}
-      {card.website && (
-        <a href={card.website} target="_blank" rel="noopener noreferrer" className="rc-action rc-action--web">🌐 Visit website</a>
-      )}
-    </div>
-  </div>
-)
-
-const SectionHeading = ({ emoji, title }: { emoji: string; title: string }) => (
-  <div className="panel-section-heading">{emoji} {title}</div>
-)
-
-const HealthPanel = () => (
-  <div className="info-panel">
-    <div className="panel-hero">
-      <div className="panel-hero-emoji">🏥</div>
-      <div>
-        <div className="panel-hero-title">Health & Wellness</div>
-        <div className="panel-hero-sub">Campus health services and provincial support lines for UCalgary students</div>
-      </div>
-    </div>
-
-    <div className="panel-urgent-banner">
-      <span>🚨</span>
-      <div>
-        <strong>In an emergency, call 911</strong>
-        <p>For on-campus emergencies, Campus Security is available 24/7 at <a href="tel:403-220-5333">403-220-5333</a>. Mental Health crisis line: <a href="tel:1-877-303-2642">1-877-303-2642</a>.</p>
-      </div>
-    </div>
-
-    <SectionHeading emoji="🎓" title="UCalgary Services" />
-    {healthUCalgary.map((c, i) => <ResourceCard key={i} card={c} />)}
-
-    <SectionHeading emoji="🏛️" title="Alberta Health Services" />
-    {healthAHS.map((c, i) => <ResourceCard key={i} card={c} />)}
-  </div>
-)
-
-const ResourcesPanel = () => (
-  <div className="info-panel">
-    <div className="panel-hero">
-      <div className="panel-hero-emoji">📚</div>
-      <div>
-        <div className="panel-hero-title">Student Resources</div>
-        <div className="panel-hero-sub">Financial, legal, safety, academic, and diversity support for UCalgary students</div>
-      </div>
-    </div>
-
-    <SectionHeading emoji="💰" title="Financial Support" />
-    {resourcesFinancial.map((c, i) => <ResourceCard key={i} card={c} />)}
-
-    <SectionHeading emoji="⚖️" title="Legal & Advocacy" />
-    {resourcesLegal.map((c, i) => <ResourceCard key={i} card={c} />)}
-
-    <SectionHeading emoji="🛡️" title="Campus Safety" />
-    {resourcesSafety.map((c, i) => <ResourceCard key={i} card={c} />)}
-
-    <SectionHeading emoji="🎓" title="Academic Support" />
-    {resourcesAcademic.map((c, i) => <ResourceCard key={i} card={c} />)}
-
-    <SectionHeading emoji="🌈" title="Diversity & Inclusion" />
-    {resourcesDiversity.map((c, i) => <ResourceCard key={i} card={c} />)}
-  </div>
-)
+// ── Resource chip extractor ───────────────────────────────────────────────────
 
 function extractResourceChips(resources: Record<string, Resource | Resource[] | string> | null | undefined) {
   if (!resources) return []
   const chips: { label: string; href?: string; phone?: string }[] = []
-  const process = (r: Resource) => chips.push({ label: r.name || r.title || 'Resource', href: r.website || r.url || r.link, phone: r.phone })
+  const processResource = (r: Resource) => {
+    chips.push({ label: r.name || r.title || 'Resource', href: r.website || r.url || r.link, phone: r.phone })
+  }
   for (const value of Object.values(resources)) {
     if (typeof value === 'string') continue
-    if (Array.isArray(value)) value.forEach(item => typeof item === 'object' && process(item as Resource))
-    else if (typeof value === 'object' && value !== null) process(value as Resource)
+    if (Array.isArray(value)) value.forEach(item => typeof item === 'object' && processResource(item as Resource))
+    else if (typeof value === 'object' && value !== null) processResource(value as Resource)
   }
   return chips
 }
 
-// ── Main App ───────────────────────────────────────────────────────────────────
+// ── Resource card ─────────────────────────────────────────────────────────────
+
+interface ResourceCardProps {
+  name: string
+  description?: string
+  phone?: string
+  altPhone?: string
+  email?: string
+  website?: string
+  hours?: string
+  location?: string
+  available?: string
+  services?: string[]
+  note?: string
+  badge?: string
+  badgeColor?: 'blue' | 'pink' | 'orange' | 'green'
+}
+
+function ResourceCard({ name, description, phone, altPhone, email, website, hours, location, available, services, note, badge, badgeColor = 'blue' }: ResourceCardProps) {
+  return (
+    <div className="resource-card">
+      <div className="rc-header">
+        <span className="rc-name">{name}</span>
+        {badge && <span className={`rc-badge rc-badge--${badgeColor}`}>{badge}</span>}
+      </div>
+      {description && <p className="rc-desc">{description}</p>}
+      <div className="rc-meta">
+        {available && <span className="rc-pill rc-pill--green">🕐 {available}</span>}
+        {hours && <span className="rc-pill">{hours}</span>}
+        {location && <span className="rc-pill">📍 {location}</span>}
+      </div>
+      {services && services.length > 0 && (
+        <ul className="rc-services">
+          {services.map((s, i) => <li key={i}>{s}</li>)}
+        </ul>
+      )}
+      {note && <p className="rc-note">{note}</p>}
+      <div className="rc-actions">
+        {phone && <a href={`tel:${phone.replace(/[^0-9+]/g, '')}`} className="rc-action rc-action--phone">📞 {phone}</a>}
+        {altPhone && <a href={`tel:${altPhone.replace(/[^0-9+]/g, '')}`} className="rc-action rc-action--phone">📞 {altPhone}</a>}
+        {email && <a href={`mailto:${email}`} className="rc-action rc-action--email">✉️ {email}</a>}
+        {website && <a href={website} target="_blank" rel="noopener noreferrer" className="rc-action rc-action--web">🔗 Visit website</a>}
+      </div>
+    </div>
+  )
+}
+
+function SectionHeading({ emoji, title }: { emoji: string; title: string }) {
+  return <h3 className="panel-section-heading"><span>{emoji}</span>{title}</h3>
+}
+
+function SubHeading({ title }: { title: string }) {
+  return <h4 className="panel-sub-heading">{title}</h4>
+}
+
+// ── Health & Wellness Panel ───────────────────────────────────────────────────
+
+function HealthWellnessPanel() {
+  const [data, setData] = useState<HealthWellnessData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    fetchHealthWellness().then(setData).catch(() => setError(true)).finally(() => setLoading(false))
+  }, [])
+
+  if (loading) return <div className="panel-loading"><TypingDots /></div>
+  if (error || !data) return <div className="panel-error"><p>Couldn't load resources. Please check your connection and try again.</p></div>
+
+  const { ucalgary, studentUnion, ahs } = data
+
+  return (
+    <div className="info-panel">
+      <div className="panel-hero">
+        <span className="panel-hero-emoji">🏥</span>
+        <div>
+          <h2 className="panel-hero-title">Health &amp; Wellness</h2>
+          <p className="panel-hero-sub">UCalgary health services, mental wellness support, and Student Union resources</p>
+        </div>
+      </div>
+
+      <SectionHeading emoji="🎓" title="UCalgary Student Wellness Services" />
+      <ResourceCard name={ucalgary.mentalHealth.name ?? ''} description={ucalgary.mentalHealth.description ?? 'Free, confidential mental health support for all registered UCalgary students.'} phone={ucalgary.mentalHealth.phone} email={ucalgary.mentalHealth.email} website={ucalgary.mentalHealth.website} hours={ucalgary.mentalHealth.hours} location={ucalgary.mentalHealth.location} services={ucalgary.mentalHealth.services} note={ucalgary.mentalHealth.bookingInfo} badge="Free" badgeColor="green" />
+      <ResourceCard name={ucalgary.medicalClinic.name ?? ''} description={ucalgary.medicalClinic.description ?? 'On-campus medical clinic for walk-in appointments and student health needs.'} phone={ucalgary.medicalClinic.phone} website={ucalgary.medicalClinic.website} hours={ucalgary.medicalClinic.hours} location={ucalgary.medicalClinic.location} services={ucalgary.medicalClinic.services} badge="Free" badgeColor="green" />
+      <ResourceCard name={ucalgary.sexualViolenceSupport.name ?? ''} description={ucalgary.sexualViolenceSupport.description} phone={ucalgary.sexualViolenceSupport.phone} email={ucalgary.sexualViolenceSupport.email} website={ucalgary.sexualViolenceSupport.website} badge="Confidential" badgeColor="pink" />
+      <ResourceCard name={ucalgary.campusSecurity.name ?? ''} description={ucalgary.campusSecurity.description} phone={ucalgary.campusSecurity.phone} available={ucalgary.campusSecurity.available} note="Safe Walk program available — free escort service across campus at night" website={ucalgary.campusSecurity.safeWalk} badge="24/7" badgeColor="blue" />
+
+      <SectionHeading emoji="🤝" title="Students' Union" />
+      <ResourceCard name={studentUnion.insurance.name} description={`Coverage includes: ${Object.entries(studentUnion.insurance.coverage).map(([k, v]) => `${k}: ${v}`).join(' · ')}`} phone={studentUnion.insurance.phone} website={studentUnion.insurance.website} note={studentUnion.insurance.note} badge="All undergrads" badgeColor="orange" />
+      <ResourceCard name={studentUnion.peerSupport.name ?? ''} description={studentUnion.peerSupport.description} website={studentUnion.peerSupport.website} services={studentUnion.peerSupport.services} badge="Free" badgeColor="green" />
+      <ResourceCard name={studentUnion.qCentre.name ?? ''} description={studentUnion.qCentre.description} website={studentUnion.qCentre.website} location={studentUnion.qCentre.location} />
+
+      <SectionHeading emoji="🏨" title="Alberta Health Services (AHS)" />
+      <SubHeading title="Crisis &amp; Mental Health Lines" />
+      <ResourceCard name={ahs.distressCentre.name ?? ''} description={ahs.distressCentre.description} phone={ahs.distressCentre.phone} website={ahs.distressCentre.website} available={ahs.distressCentre.available} note={ahs.distressCentre.text ? `Text: ${ahs.distressCentre.text}` : undefined} badge="24/7" badgeColor="pink" />
+      <ResourceCard name={ahs.suicideCrisisHelpline.name ?? ''} description={ahs.suicideCrisisHelpline.description} phone={ahs.suicideCrisisHelpline.phone} available={ahs.suicideCrisisHelpline.available} note="Call or text 988" badge="24/7" badgeColor="pink" />
+      <ResourceCard name={ahs.mentalHealthHelpLine.name ?? ''} description={ahs.mentalHealthHelpLine.description} phone={ahs.mentalHealthHelpLine.phone} available={ahs.mentalHealthHelpLine.available} badge="24/7" />
+      <ResourceCard name={ahs.addictionHelpLine.name ?? ''} description={ahs.addictionHelpLine.description} phone={ahs.addictionHelpLine.phone} available={ahs.addictionHelpLine.available} badge="24/7" />
+      <ResourceCard name={ahs.healthLink.name ?? ''} description={ahs.healthLink.description} phone={ahs.healthLink.phone} website={ahs.healthLink.website} available="24/7" services={ahs.healthLink.whenToCall} />
+
+      <SubHeading title="Urgent Care &amp; ERs" />
+      {ahs.urgentCare.map((c, i) => <ResourceCard key={i} name={c.name ?? ''} description={c.description} phone={c.phone} available={c.hours} note={`📍 ${c.address ?? ''}`} services={c.services} />)}
+      {ahs.emergencyRooms.map((er, i) => <ResourceCard key={i} name={er.name ?? ''} phone={er.phone} note={`📍 ${er.address ?? ''}${er.note ? ` · ${er.note}` : ''}`} />)}
+
+      <SubHeading title="Sexual Health" />
+      <ResourceCard name={ahs.calgaryFamilyServices.name ?? ''} phone={ahs.calgaryFamilyServices.phone} website={ahs.calgaryFamilyServices.website} note={`📍 ${ahs.calgaryFamilyServices.address ?? ''}`} services={ahs.calgaryFamilyServices.services} />
+    </div>
+  )
+}
+
+// ── General Resources Panel ───────────────────────────────────────────────────
+
+function GeneralResourcesPanel() {
+  const [data, setData] = useState<GeneralResourcesData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    fetchGeneralResources().then(setData).catch(() => setError(true)).finally(() => setLoading(false))
+  }, [])
+
+  if (loading) return <div className="panel-loading"><TypingDots /></div>
+  if (error || !data) return <div className="panel-error"><p>Couldn't load resources. Please check your connection and try again.</p></div>
+
+  const { ucalgary, studentUnion } = data
+
+  return (
+    <div className="info-panel">
+      <div className="panel-hero">
+        <span className="panel-hero-emoji">📚</span>
+        <div>
+          <h2 className="panel-hero-title">Resources</h2>
+          <p className="panel-hero-sub">Financial help, legal support, campus safety, housing, and food security</p>
+        </div>
+      </div>
+
+      <SectionHeading emoji="💰" title="Financial Help" />
+      {ucalgary.financialAid.resources.map((r, i) => <ResourceCard key={i} name={r.name ?? ''} description={r.description} phone={r.phone} website={r.website} location={r.location} note={r.howToApply ? `How to apply: ${r.howToApply}` : r.turnaround} hours={r.hours} />)}
+      <ResourceCard name={studentUnion.hardshipFund.name ?? ''} description={studentUnion.hardshipFund.description} email={studentUnion.hardshipFund.email} website={studentUnion.hardshipFund.website} note={studentUnion.hardshipFund.turnaround} services={studentUnion.hardshipFund.eligibility} badge="Last resort" badgeColor="orange" />
+
+      <SectionHeading emoji="⚖️" title="Legal Help" />
+      {ucalgary.legalHelp.resources.map((r, i) => <ResourceCard key={i} name={r.name ?? ''} description={r.description} phone={r.phone} website={r.website} location={r.location} hours={r.hours} badge={i === 0 ? 'Free for undergrads' : undefined} badgeColor="green" />)}
+
+      <SectionHeading emoji="🛡️" title="Campus Safety" />
+      {ucalgary.campusSafety.resources.map((r, i) => <ResourceCard key={i} name={r.name ?? ''} description={r.description} phone={r.phone} altPhone={r.altPhone} website={r.safeWalk ?? r.onlineReport ?? r.website} available={r.available} note={r.note} badge={r.available === '24/7' ? '24/7' : undefined} badgeColor="blue" />)}
+
+      <SectionHeading emoji="🏠" title="Housing Help" />
+      {ucalgary.housingHelp.resources.map((r, i) => <ResourceCard key={i} name={r.name ?? ''} description={r.description} website={r.website} note={r.note} />)}
+      <ResourceCard name={studentUnion.offCampusHousing.name ?? ''} description={studentUnion.offCampusHousing.description} website={studentUnion.offCampusHousing.website} />
+
+      <SectionHeading emoji="🥗" title="Food Security" />
+      <ResourceCard name={studentUnion.foodBank.name ?? ''} description={studentUnion.foodBank.description} phone={studentUnion.foodBank.phone} email={studentUnion.foodBank.email} website={studentUnion.foodBank.website} hours={studentUnion.foodBank.hours} location={studentUnion.foodBank.location} note={studentUnion.foodBank.note} badge="Free · No ID" badgeColor="green" />
+      {ucalgary.foodSecurity.resources.map((r, i) => <ResourceCard key={i} name={r.name ?? ''} description={r.description} website={r.website} location={r.location} />)}
+      <ResourceCard name={studentUnion.denAffordableMeals.name ?? ''} description={studentUnion.denAffordableMeals.description} website={studentUnion.denAffordableMeals.website} location={studentUnion.denAffordableMeals.location} />
+
+      <SectionHeading emoji="📣" title="Student Advocacy" />
+      <ResourceCard name={studentUnion.advocacy.name ?? ''} description={studentUnion.advocacy.description} phone={studentUnion.advocacy.phone} email={studentUnion.advocacy.email} website={studentUnion.advocacy.website} location={studentUnion.advocacy.location} badge="Free" badgeColor="green" />
+
+      <div className="panel-urgent-banner">
+        <span>⚡</span>
+        <div>
+          <strong>Need urgent support?</strong>
+          <p>{ucalgary.urgentSupport.description}</p>
+          <a href={ucalgary.urgentSupport.website} target="_blank" rel="noopener noreferrer">UCalgary Urgent Support page →</a>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [view, setView] = useState<View>('chat')
   const [messages, setMessages] = useState<Message[]>([{
     role: 'assistant',
     text: "Hi! I'm ConnectAtlas, your UCalgary health companion. Ask me anything about campus health resources, mental wellness, or student support services. 💙",
@@ -386,12 +261,13 @@ export default function App() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [dark, setDark] = useState(false)
+  const [view, setView] = useState<NavView>('chat')
+  const [provider, setProvider] = useState<Provider>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
-    if (view === 'chat') bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading, view])
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, loading])
 
   const handleSend = async () => {
     const text = input.trim()
@@ -402,15 +278,18 @@ export default function App() {
     try {
       const res = await sendMessage(text, conversationHistory)
       setConversationHistory(res.conversationHistory)
+      if (res.provider) setProvider(res.provider as Provider)
       setMessages(prev => [...prev, {
         role: 'assistant',
         text: res.reply || "I'm not sure how to help with that. Try asking about UCalgary health services!",
         resources: res.resources,
+        provider: res.provider,
       }])
     } catch (err: any) {
       setMessages(prev => [...prev, {
         role: 'assistant',
         text: `Sorry, I couldn't reach the server. ${err.message || 'Please try again shortly.'}`,
+        provider: null,
       }])
     } finally {
       setLoading(false)
@@ -421,12 +300,6 @@ export default function App() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() }
   }
 
-  const navItems: { key: View; label: string }[] = [
-    { key: 'chat',      label: '💬 Chat' },
-    { key: 'health',    label: '🏥 Health & Wellness' },
-    { key: 'resources', label: '📚 Resources' },
-  ]
-
   return (
     <div className={`app-shell ${dark ? 'dark' : 'light'}`}>
       <aside className="sidebar">
@@ -436,11 +309,9 @@ export default function App() {
         </div>
         <div className="sidebar-tagline">Your UCalgary<br />Health Companion</div>
         <nav className="sidebar-nav">
-          {navItems.map(({ key, label }) => (
-            <div key={key} className={`nav-item ${view === key ? 'active' : ''}`} onClick={() => setView(key)}>
-              {label}
-            </div>
-          ))}
+          <button className={`nav-item${view === 'chat' ? ' active' : ''}`} onClick={() => setView('chat')}>💬 Chat</button>
+          <button className={`nav-item${view === 'health' ? ' active' : ''}`} onClick={() => setView('health')}>🏥 Health &amp; Wellness</button>
+          <button className={`nav-item${view === 'resources' ? ' active' : ''}`} onClick={() => setView('resources')}>📚 Resources</button>
         </nav>
         <div className="sidebar-footer">
           <button className="theme-toggle" onClick={() => setDark(d => !d)} aria-label="Toggle theme">
@@ -451,7 +322,7 @@ export default function App() {
             </div>
             <span className="toggle-label">{dark ? 'Dark mode' : 'Light mode'}</span>
           </button>
-          <div className="disclaimer">This tool provides general information only. For emergencies, call 911.</div>
+          <div className="disclaimer">This tool provides general information only. For emergencies, call 911 or Campus Security at 403-220-5333.</div>
         </div>
       </aside>
 
@@ -460,10 +331,19 @@ export default function App() {
           <div className="header-left">
             <LogoSVG />
             <div>
-              <div className="header-title">ConnectAtlas</div>
-              <div className="header-status"><span className="status-dot" />Health Assistant</div>
+              <div className="header-title">
+                {view === 'chat' && 'ConnectAtlas'}
+                {view === 'health' && 'Health & Wellness'}
+                {view === 'resources' && 'Resources'}
+              </div>
+              <div className="header-status">
+                {view === 'chat' && <><span className="status-dot" />Health Assistant</>}
+                {view === 'health' && <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>UCalgary · AHS · Student Union</span>}
+                {view === 'resources' && <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>Financial · Legal · Safety · Housing · Food</span>}
+              </div>
             </div>
           </div>
+          {view === 'chat' && <ProviderBadge provider={provider} />}
         </header>
 
         {view === 'chat' && (
@@ -475,20 +355,14 @@ export default function App() {
                   <div key={i} className={`message-row ${msg.role}`}>
                     {msg.role === 'assistant' && <div className="avatar"><LogoSVG /></div>}
                     <div className="bubble-wrap">
-                      <div className={`bubble ${msg.role}`}>
-                        <ReactMarkdown>{msg.text}</ReactMarkdown>
-                      </div>
+                      <div className={`bubble ${msg.role}`}>{msg.text}</div>
                       {chips.length > 0 && (
                         <div className="resources">
                           <div className="resources-label">📎 Helpful Resources</div>
                           {chips.map((chip, ri) => (
                             chip.href
-                              ? <a key={ri} href={chip.href} target="_blank" rel="noopener noreferrer" className="resource-chip">
-                                  {chip.label}{chip.phone ? ` · ${chip.phone}` : ''}
-                                </a>
-                              : <span key={ri} className="resource-chip no-link">
-                                  {chip.label}{chip.phone ? ` · ${chip.phone}` : ''}
-                                </span>
+                              ? <a key={ri} href={chip.href} target="_blank" rel="noopener noreferrer" className="resource-chip">{chip.label}{chip.phone ? ` · ${chip.phone}` : ''}</a>
+                              : <span key={ri} className="resource-chip no-link">{chip.label}{chip.phone ? ` · ${chip.phone}` : ''}</span>
                           ))}
                         </div>
                       )}
@@ -504,10 +378,10 @@ export default function App() {
               )}
               <div ref={bottomRef} />
             </div>
+
             <div className="input-area">
               <div className="input-box">
                 <textarea
-                  ref={inputRef}
                   className="chat-input"
                   placeholder="Ask about campus health resources, mental wellness, student services…"
                   value={input}
@@ -515,7 +389,7 @@ export default function App() {
                   onKeyDown={handleKeyDown}
                   rows={1}
                 />
-                <button className="send-btn" onClick={handleSend} disabled={!input.trim() || loading} aria-label="Send">
+                <button className="send-btn" onClick={handleSend} disabled={!input.trim() || loading} aria-label="Send message">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="22" y1="2" x2="11" y2="13" />
                     <polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -527,13 +401,8 @@ export default function App() {
           </>
         )}
 
-        {view === 'health' && (
-          <div className="panel-scroll"><HealthPanel /></div>
-        )}
-
-        {view === 'resources' && (
-          <div className="panel-scroll"><ResourcesPanel /></div>
-        )}
+        {view === 'health' && <div className="panel-scroll"><HealthWellnessPanel /></div>}
+        {view === 'resources' && <div className="panel-scroll"><GeneralResourcesPanel /></div>}
       </main>
     </div>
   )
