@@ -27,12 +27,12 @@ function getCFRequestsToday(): number {
   return cfRequestsToday;
 }
 
-function incrementCFCounter() {
-  cfRequestsToday++;
-}
+function incrementCFCounter() { cfRequestsToday++; }
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are a compassionate support assistant for University of Calgary (UCalgary) students called ConnectAtlas.
+
+You are powered by Gemma 4 (via Cloudflare Workers AI) for the first 300 daily requests, then GPT-4o Mini (via OpenAI) as a fallback. If a user asks what AI model or language model is being used, tell them this honestly.
 
 Your role:
 1. Provide accurate, empathetic responses to students facing health, financial, legal, safety, or personal challenges.
@@ -68,6 +68,7 @@ async function callCloudflareAI(messages: Message[], maxTokens = 1000): Promise<
       messages,
       max_tokens: maxTokens,
       temperature: 0.7,
+      stream: false,
     }),
   });
 
@@ -76,25 +77,30 @@ async function callCloudflareAI(messages: Message[], maxTokens = 1000): Promise<
     throw new Error(`Cloudflare AI error ${response.status}: ${error}`);
   }
 
-  const data = await response.json() as { result?: { response?: string }; success?: boolean };
+  const data = await response.json() as any;
 
-  if (!data.success || !data.result?.response) {
-    throw new Error("Empty or failed response from Cloudflare AI");
+  // Handle both response formats Cloudflare may return
+  const reply =
+    data?.result?.response ||                          // /run format
+    data?.choices?.[0]?.message?.content ||            // OpenAI-compat format
+    data?.result?.choices?.[0]?.message?.content;      // nested OpenAI-compat
+
+  if (!reply || reply.trim() === "") {
+    console.error("Cloudflare raw response:", JSON.stringify(data));
+    throw new Error("Empty or unrecognized response from Cloudflare AI");
   }
 
-  return data.result.response;
+  return reply;
 }
 
 async function callOpenAI(messages: Message[], maxTokens = 1000): Promise<string> {
   const openai = new OpenAI({ apiKey: config.openaiApiKey });
-
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages,
     temperature: 0.7,
     max_tokens: maxTokens,
   });
-
   const reply = completion.choices[0].message.content;
   if (!reply) throw new Error("Empty response from OpenAI");
   return reply;
@@ -104,7 +110,6 @@ async function callLLM(messages: Message[], maxTokens = 1000): Promise<{ reply: 
   const cfConfigured = config.cloudflareAccountId && config.cloudflareApiToken;
   const cfLimitReached = getCFRequestsToday() >= config.cloudflareDailyLimit;
 
-  // Try Cloudflare first if configured and under daily limit
   if (cfConfigured && !cfLimitReached) {
     try {
       console.log(`☁️  Using Cloudflare Workers AI (request ${getCFRequestsToday() + 1}/${config.cloudflareDailyLimit} today)`);
@@ -118,9 +123,8 @@ async function callLLM(messages: Message[], maxTokens = 1000): Promise<{ reply: 
     console.log(`📊 Cloudflare daily limit reached (${config.cloudflareDailyLimit}), using OpenAI`);
   }
 
-  // Fall back to OpenAI
   if (!config.openaiApiKey) {
-    throw new Error("No LLM available — set CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN or OPENAI_API_KEY");
+    throw new Error("No LLM available — configure CLOUDFLARE or OPENAI credentials");
   }
 
   console.log("🤖 Using OpenAI fallback");
@@ -143,9 +147,7 @@ export class ChatbotController {
 
       const { resources, usedSearch } = await this.resolveResources(intent, message);
 
-      const messages: Message[] = [
-        { role: "system", content: SYSTEM_PROMPT },
-      ];
+      const messages: Message[] = [{ role: "system", content: SYSTEM_PROMPT }];
 
       if (resources) {
         messages.push({
@@ -178,107 +180,31 @@ export class ChatbotController {
       });
     } catch (error: any) {
       console.error("❌ Chat error:", error);
-
-      if (error.status === 429) {
-        return res.status(429).json({ error: "Rate limit exceeded. Please try again later." });
-      }
-      if (error.status === 401) {
-        return res.status(500).json({ error: "API authentication failed." });
-      }
-      if (error.code === "insufficient_quota") {
-        return res.status(500).json({ error: "OpenAI account has insufficient credits." });
-      }
-
+      if (error.status === 429) return res.status(429).json({ error: "Rate limit exceeded." });
+      if (error.status === 401) return res.status(500).json({ error: "API authentication failed." });
+      if (error.code === "insufficient_quota") return res.status(500).json({ error: "OpenAI account has insufficient credits." });
       res.status(500).json({ error: "Failed to process chat request", details: error.message });
     }
   }
 
-  // ── Intent detection ──────────────────────────────────────────────────────
   private detectIntent(message: string): ResourceIntent {
     const m = message.toLowerCase();
-
-    if (
-      m.includes("suicid") || m.includes("kill myself") || m.includes("end my life") ||
-      m.includes("hurt myself") || m.includes("self-harm") || m.includes("crisis") ||
-      m.includes("overdose")
-    ) return "crisis";
-
-    if (
-      m.includes("anxious") || m.includes("anxiety") || m.includes("depressed") ||
-      m.includes("depression") || m.includes("overwhelmed") || m.includes("mental health") ||
-      m.includes("counsell") || m.includes("therapy") || m.includes("therapist") ||
-      m.includes("stress") || m.includes("burnout") || m.includes("loneli") ||
-      m.includes("panic attack") || m.includes("ptsd") || m.includes("trauma")
-    ) return "mental_health";
-
-    if (
-      m.includes("addiction") || m.includes("substance") || m.includes("alcohol") ||
-      m.includes("drugs") || m.includes("drinking") || m.includes("recovery")
-    ) return "addiction";
-
-    if (
-      m.includes("sexual assault") || m.includes("sexual violence") ||
-      m.includes("rape") || m.includes("survivor")
-    ) return "sexual_violence";
-
-    if (
-      m.includes("sti") || m.includes("std") || m.includes("birth control") ||
-      m.includes("sexual health") || m.includes("condom") || m.includes("pregnancy") ||
-      m.includes("contraception")
-    ) return "sexual_health";
-
-    if (
-      m.includes("sick") || m.includes("fever") || m.includes("cold") || m.includes("flu") ||
-      m.includes("doctor") || m.includes("prescription") || m.includes("vaccine") ||
-      m.includes("medical") || m.includes("injury") || m.includes("pain") ||
-      m.includes("health clinic") || m.includes("walk-in")
-    ) return "physical_health";
-
-    if (
-      m.includes("financ") || m.includes("money") || m.includes("afford") ||
-      m.includes("bursary") || m.includes("loan") || m.includes("debt") ||
-      m.includes("tuition") || m.includes("broke") || m.includes("scholarship") ||
-      m.includes("emergency fund") || m.includes("hardship")
-    ) return "financial_aid";
-
-    if (
-      m.includes("insurance") || m.includes("studentcare") || m.includes("health plan") ||
-      m.includes("dental") || m.includes("coverage") || m.includes("benefits")
-    ) return "insurance";
-
-    if (
-      m.includes("legal") || m.includes("lawyer") || m.includes("court") ||
-      m.includes("law ") || m.includes("tenant") || m.includes("landlord") ||
-      m.includes("evict") || m.includes("contract") || m.includes("criminal") ||
-      m.includes("sue") || m.includes("rights")
-    ) return "legal_help";
-
-    if (
-      m.includes("safe") || m.includes("danger") || m.includes("threat") ||
-      m.includes("scared") || m.includes("stalking") || m.includes("campus security") ||
-      m.includes("safe walk") || m.includes("violence") || m.includes("police")
-    ) return "campus_safety";
-
-    if (
-      m.includes("housing") || m.includes("rent") || m.includes("apartment") ||
-      m.includes("homeless") || m.includes("shelter") || m.includes("roommate") ||
-      m.includes("lease")
-    ) return "housing";
-
-    if (
-      m.includes("food") || m.includes("hungry") || m.includes("groceries") ||
-      m.includes("meal") || m.includes("eat") || m.includes("food bank") ||
-      m.includes("starving")
-    ) return "food_security";
-
+    if (m.includes("suicid") || m.includes("kill myself") || m.includes("end my life") || m.includes("hurt myself") || m.includes("self-harm") || m.includes("crisis") || m.includes("overdose")) return "crisis";
+    if (m.includes("anxious") || m.includes("anxiety") || m.includes("depressed") || m.includes("depression") || m.includes("overwhelmed") || m.includes("mental health") || m.includes("counsell") || m.includes("therapy") || m.includes("therapist") || m.includes("stress") || m.includes("burnout") || m.includes("loneli") || m.includes("panic attack") || m.includes("ptsd") || m.includes("trauma")) return "mental_health";
+    if (m.includes("addiction") || m.includes("substance") || m.includes("alcohol") || m.includes("drugs") || m.includes("drinking") || m.includes("recovery")) return "addiction";
+    if (m.includes("sexual assault") || m.includes("sexual violence") || m.includes("rape") || m.includes("survivor")) return "sexual_violence";
+    if (m.includes("sti") || m.includes("std") || m.includes("birth control") || m.includes("sexual health") || m.includes("condom") || m.includes("pregnancy") || m.includes("contraception")) return "sexual_health";
+    if (m.includes("sick") || m.includes("fever") || m.includes("cold") || m.includes("flu") || m.includes("doctor") || m.includes("prescription") || m.includes("vaccine") || m.includes("medical") || m.includes("injury") || m.includes("pain") || m.includes("health clinic") || m.includes("walk-in")) return "physical_health";
+    if (m.includes("financ") || m.includes("money") || m.includes("afford") || m.includes("bursary") || m.includes("loan") || m.includes("debt") || m.includes("tuition") || m.includes("broke") || m.includes("scholarship") || m.includes("emergency fund") || m.includes("hardship")) return "financial_aid";
+    if (m.includes("insurance") || m.includes("studentcare") || m.includes("health plan") || m.includes("dental") || m.includes("coverage") || m.includes("benefits")) return "insurance";
+    if (m.includes("legal") || m.includes("lawyer") || m.includes("court") || m.includes("law ") || m.includes("tenant") || m.includes("landlord") || m.includes("evict") || m.includes("contract") || m.includes("criminal") || m.includes("sue") || m.includes("rights")) return "legal_help";
+    if (m.includes("safe") || m.includes("danger") || m.includes("threat") || m.includes("scared") || m.includes("stalking") || m.includes("campus security") || m.includes("safe walk") || m.includes("violence") || m.includes("police")) return "campus_safety";
+    if (m.includes("housing") || m.includes("rent") || m.includes("apartment") || m.includes("homeless") || m.includes("shelter") || m.includes("roommate") || m.includes("lease")) return "housing";
+    if (m.includes("food") || m.includes("hungry") || m.includes("groceries") || m.includes("meal") || m.includes("eat") || m.includes("food bank") || m.includes("starving")) return "food_security";
     return "general";
   }
 
-  // ── Resource resolution ───────────────────────────────────────────────────
-  private async resolveResources(
-    intent: ResourceIntent,
-    message: string
-  ): Promise<{ resources: any; usedSearch: boolean }> {
+  private async resolveResources(intent: ResourceIntent, message: string): Promise<{ resources: any; usedSearch: boolean }> {
     try {
       const ucWellness = ucalgaryService.getWellnessResourcesStatic();
       const ucGeneral = ucalgaryService.getGeneralResourcesStatic();
@@ -287,129 +213,20 @@ export class ChatbotController {
       const ahs = ahsService.getResources();
 
       switch (intent) {
-        case "crisis":
-          return {
-            usedSearch: false,
-            resources: {
-              emergency: "911",
-              campusSecurity: ucWellness.campusSecurity,
-              distressCentre: ahs.distressCentre,
-              suicideLine: ahs.suicideCrisisHelpline,
-              mentalHealthLine: ahs.mentalHealthHelpLine,
-              wellnessCentre: ucWellness.mentalHealth,
-            },
-          };
-        case "mental_health":
-          return {
-            usedSearch: false,
-            resources: {
-              wellnessCentre: ucWellness.mentalHealth,
-              peerSupport: suWellness.peerSupport,
-              insurance: suWellness.insurance,
-              distressCentre: ahs.distressCentre,
-              mentalHealthLine: ahs.mentalHealthHelpLine,
-            },
-          };
-        case "addiction":
-          return {
-            usedSearch: false,
-            resources: {
-              wellnessCentre: ucWellness.mentalHealth,
-              addictionLine: ahs.addictionHelpLine,
-              distressCentre: ahs.distressCentre,
-            },
-          };
-        case "sexual_violence":
-          return {
-            usedSearch: false,
-            resources: {
-              sexualViolenceSupport: ucWellness.sexualViolenceSupport,
-              campusSecurity: ucWellness.campusSecurity,
-              distressCentre: ahs.distressCentre,
-            },
-          };
-        case "sexual_health":
-          return {
-            usedSearch: false,
-            resources: {
-              medicalClinic: ucWellness.medicalClinic,
-              calgaryFamilyServices: ahs.calgaryFamilyServices,
-            },
-          };
-        case "physical_health":
-          return {
-            usedSearch: false,
-            resources: {
-              medicalClinic: ucWellness.medicalClinic,
-              healthLink: ahs.healthLink,
-              urgentCare: ahs.urgentCare,
-            },
-          };
-        case "financial_aid":
-          return {
-            usedSearch: false,
-            resources: {
-              ucalgaryEmergencyAid: ucGeneral.financialAid,
-              suHardshipFund: suGeneral.hardshipFund,
-              urgentSupport: ucGeneral.urgentSupport,
-            },
-          };
-        case "insurance":
-          return {
-            usedSearch: false,
-            resources: {
-              studentCare: suWellness.insurance,
-              wellnessFreeServices: {
-                note: "UCalgary Student Wellness Services counselling is FREE — no insurance needed",
-                phone: ucWellness.mentalHealth.phone,
-                website: ucWellness.mentalHealth.website,
-              },
-            },
-          };
-        case "legal_help":
-          return {
-            usedSearch: false,
-            resources: {
-              legalHelp: ucGeneral.legalHelp,
-              advocacy: suGeneral.advocacy,
-            },
-          };
-        case "campus_safety":
-          return {
-            usedSearch: false,
-            resources: {
-              campusSafety: ucGeneral.campusSafety,
-              campusSecurity: ucWellness.campusSecurity,
-            },
-          };
-        case "housing":
-          return {
-            usedSearch: false,
-            resources: {
-              housingHelp: ucGeneral.housingHelp,
-              offCampusHousing: suGeneral.offCampusHousing,
-            },
-          };
-        case "food_security":
-          return {
-            usedSearch: false,
-            resources: {
-              foodBank: suGeneral.foodBank,
-              foodHub: ucGeneral.foodSecurity,
-              denMeals: suGeneral.denAffordableMeals,
-            },
-          };
-        case "general":
-          return {
-            usedSearch: false,
-            resources: {
-              wellnessCentre: { phone: ucWellness.mentalHealth.phone, website: ucWellness.mentalHealth.website },
-              urgentSupport: ucGeneral.urgentSupport,
-              campusSecurity: ucWellness.campusSecurity,
-            },
-          };
-        default:
-          return await this.searchForResources(message);
+        case "crisis": return { usedSearch: false, resources: { emergency: "911", campusSecurity: ucWellness.campusSecurity, distressCentre: ahs.distressCentre, suicideLine: ahs.suicideCrisisHelpline, mentalHealthLine: ahs.mentalHealthHelpLine, wellnessCentre: ucWellness.mentalHealth } };
+        case "mental_health": return { usedSearch: false, resources: { wellnessCentre: ucWellness.mentalHealth, peerSupport: suWellness.peerSupport, insurance: suWellness.insurance, distressCentre: ahs.distressCentre, mentalHealthLine: ahs.mentalHealthHelpLine } };
+        case "addiction": return { usedSearch: false, resources: { wellnessCentre: ucWellness.mentalHealth, addictionLine: ahs.addictionHelpLine, distressCentre: ahs.distressCentre } };
+        case "sexual_violence": return { usedSearch: false, resources: { sexualViolenceSupport: ucWellness.sexualViolenceSupport, campusSecurity: ucWellness.campusSecurity, distressCentre: ahs.distressCentre } };
+        case "sexual_health": return { usedSearch: false, resources: { medicalClinic: ucWellness.medicalClinic, calgaryFamilyServices: ahs.calgaryFamilyServices } };
+        case "physical_health": return { usedSearch: false, resources: { medicalClinic: ucWellness.medicalClinic, healthLink: ahs.healthLink, urgentCare: ahs.urgentCare } };
+        case "financial_aid": return { usedSearch: false, resources: { ucalgaryEmergencyAid: ucGeneral.financialAid, suHardshipFund: suGeneral.hardshipFund, urgentSupport: ucGeneral.urgentSupport } };
+        case "insurance": return { usedSearch: false, resources: { studentCare: suWellness.insurance, wellnessFreeServices: { note: "UCalgary Student Wellness Services counselling is FREE — no insurance needed", phone: ucWellness.mentalHealth.phone, website: ucWellness.mentalHealth.website } } };
+        case "legal_help": return { usedSearch: false, resources: { legalHelp: ucGeneral.legalHelp, advocacy: suGeneral.advocacy } };
+        case "campus_safety": return { usedSearch: false, resources: { campusSafety: ucGeneral.campusSafety, campusSecurity: ucWellness.campusSecurity } };
+        case "housing": return { usedSearch: false, resources: { housingHelp: ucGeneral.housingHelp, offCampusHousing: suGeneral.offCampusHousing } };
+        case "food_security": return { usedSearch: false, resources: { foodBank: suGeneral.foodBank, foodHub: ucGeneral.foodSecurity, denMeals: suGeneral.denAffordableMeals } };
+        case "general": return { usedSearch: false, resources: { wellnessCentre: { phone: ucWellness.mentalHealth.phone, website: ucWellness.mentalHealth.website }, urgentSupport: ucGeneral.urgentSupport, campusSecurity: ucWellness.campusSecurity } };
+        default: return await this.searchForResources(message);
       }
     } catch (error) {
       console.error("Error resolving resources:", error);
@@ -420,16 +237,9 @@ export class ChatbotController {
   private async searchForResources(message: string): Promise<{ resources: any; usedSearch: boolean }> {
     try {
       const { reply } = await callLLM([
-        {
-          role: "system",
-          content: "You are a resource finder for UCalgary students. Given a student's problem, find the most relevant UCalgary, AHS, or Calgary-area support resources. Return ONLY a valid JSON object with resource names, phone numbers, and websites. No extra text.",
-        },
-        {
-          role: "user",
-          content: `Find relevant resources for a UCalgary student with this issue: "${message}"`,
-        },
+        { role: "system", content: "You are a resource finder for UCalgary students. Return ONLY a valid JSON object with resource names, phone numbers, and websites. No extra text." },
+        { role: "user", content: `Find relevant resources for a UCalgary student with this issue: "${message}"` },
       ], 400);
-
       try {
         const jsonMatch = reply.match(/\{[\s\S]*\}/);
         const resources = jsonMatch ? JSON.parse(jsonMatch[0]) : { note: reply };

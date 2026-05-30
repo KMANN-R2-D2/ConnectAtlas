@@ -9,12 +9,18 @@ import resourceRoutes from "./routes/resources.routes.js";
 
 const app = express();
 
+// Trust proxy — required for express-rate-limit to work correctly on Render
+app.set("trust proxy", 1);
+
 // Security middleware
 app.use(helmet());
 app.use(cors({
-  origin: ['https://connectatlas.onrender.com', 'http://localhost:5173'],
-  methods: ['GET', 'POST'],
-  credentials: true
+  origin: [
+    "https://connectatlas.onrender.com",
+    "http://localhost:5173",
+  ],
+  methods: ["GET", "POST"],
+  credentials: true,
 }));
 app.use(express.json());
 
@@ -24,7 +30,7 @@ app.use("/api/", apiLimiter);
 // Routes
 app.get("/", (req, res) => {
   res.json({
-    message: "UofC Healthcare Assistant API",
+    message: "ConnectAtlas API",
     version: "2.0.0",
     status: "running",
     endpoints: {
@@ -38,7 +44,6 @@ app.get("/", (req, res) => {
 app.use("/api/chat", chatbotRoutes);
 app.use("/api/resources", resourceRoutes);
 
-// Health check endpoint
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
@@ -47,7 +52,6 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Error handling
 app.use(errorHandler);
 
 const PORT = config.port;
