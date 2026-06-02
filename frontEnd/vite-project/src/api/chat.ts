@@ -17,7 +17,7 @@ export interface Resource {
 export interface ChatResponse {
   reply: string
   intent: string
-  provider: string        // add this
+  provider: string
   usedSearch: boolean
   resources: Record<string, Resource | Resource[] | string> | null
   conversationHistory: { role: string; content: string }[]
@@ -29,7 +29,6 @@ export async function sendMessage(
   message: string,
   conversationHistory: { role: string; content: string }[] = []
 ): Promise<ChatResponse> {
-  // Fallback mock if no backend
   if (!import.meta.env.VITE_API_URL && import.meta.env.DEV) {
     return {
       reply: "Mock response: backend not connected yet.",
@@ -80,11 +79,10 @@ export interface HealthWellnessData {
     healthLink: Resource & { whenToCall?: string[] }
     mentalHealthHelpLine: Resource
     addictionHelpLine: Resource
-    distressCentre: Resource
-    suicideCrisisHelpline: Resource
-    urgentCare: (Resource & { address?: string; services?: string[] })[]
+    distressCentre: Resource & { text?: string }
+    suicideCrisisHelpline: Resource & { text?: string }
+    urgentCare: (Resource & { address?: string; services?: string[]; hours?: string })[]
     emergencyRooms: (Resource & { address?: string; note?: string })[]
-    calgaryFamilyServices: Resource & { address?: string; services?: string[] }
   }
 }
 

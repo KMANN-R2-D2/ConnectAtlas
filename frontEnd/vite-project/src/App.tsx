@@ -184,8 +184,6 @@ function HealthWellnessPanel() {
       {ahs.urgentCare.map((c, i) => <ResourceCard key={i} name={c.name ?? ''} description={c.description} phone={c.phone} available={c.hours} note={`📍 ${c.address ?? ''}`} services={c.services} />)}
       {ahs.emergencyRooms.map((er, i) => <ResourceCard key={i} name={er.name ?? ''} phone={er.phone} note={`📍 ${er.address ?? ''}${er.note ? ` · ${er.note}` : ''}`} />)}
 
-      <SubHeading title="Sexual Health" />
-      <ResourceCard name={ahs.calgaryFamilyServices.name ?? ''} phone={ahs.calgaryFamilyServices.phone} website={ahs.calgaryFamilyServices.website} note={`📍 ${ahs.calgaryFamilyServices.address ?? ''}`} services={ahs.calgaryFamilyServices.services} />
     </div>
   )
 }
