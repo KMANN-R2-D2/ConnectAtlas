@@ -12,7 +12,7 @@ const suService = new StudentUnionService();
 type ResourceIntent =
   | "mental_health" | "physical_health" | "sexual_health" | "crisis"
   | "financial_aid" | "legal_help" | "campus_safety" | "food_security"
-  | "housing" | "insurance" | "addiction" | "sexual_violence" | "general";
+  | "housing" | "insurance" | "addiction" | "sexual_violence" | "general" | "greeting";
 
 // ── Daily request counter for Cloudflare ─────────────────────────────────────
 let cfRequestsToday = 0;
@@ -202,6 +202,11 @@ export class ChatbotController {
     if (m.includes("safe") || m.includes("danger") || m.includes("threat") || m.includes("scared") || m.includes("stalking") || m.includes("campus security") || m.includes("safe walk") || m.includes("violence") || m.includes("police")) return "campus_safety";
     if (m.includes("housing") || m.includes("rent") || m.includes("apartment") || m.includes("homeless") || m.includes("shelter") || m.includes("roommate") || m.includes("lease")) return "housing";
     if (m.includes("food") || m.includes("hungry") || m.includes("groceries") || m.includes("meal") || m.includes("eat") || m.includes("food bank") || m.includes("starving")) return "food_security";
+
+    // Detect simple greetings — don't load resources for these
+    const greetingPattern = /^(hi|hello|hey|howdy|sup|what's up|whats up|good morning|good afternoon|good evening|greetings|hiya|yo)[!?,.\s]*$/i
+    if (greetingPattern.test(m.trim())) return "greeting" as ResourceIntent;
+
     return "general";
   }
 
@@ -226,6 +231,7 @@ export class ChatbotController {
         case "campus_safety": return { usedSearch: false, resources: { campusSafety: ucGeneral.campusSafety, campusSecurity: ucWellness.campusSecurity } };
         case "housing": return { usedSearch: false, resources: { housingHelp: ucGeneral.housingHelp, offCampusHousing: suGeneral.offCampusHousing } };
         case "food_security": return { usedSearch: false, resources: { foodBank: suGeneral.foodBank, foodHub: ucGeneral.foodSecurity, denMeals: suGeneral.denAffordableMeals } };
+        case "greeting": return { usedSearch: false, resources: null };
         case "general": return { usedSearch: false, resources: { wellnessCentre: { phone: ucWellness.mentalHealth.phone, website: ucWellness.mentalHealth.website }, urgentSupport: ucGeneral.urgentSupport, campusSecurity: ucWellness.campusSecurity } };
         default: return await this.searchForResources(message);
       }

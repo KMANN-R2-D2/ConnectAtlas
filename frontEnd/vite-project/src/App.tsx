@@ -70,7 +70,11 @@ function extractResourceChips(resources: Record<string, Resource | Resource[] | 
   if (!resources) return []
   const chips: { label: string; href?: string; phone?: string }[] = []
   const processResource = (r: Resource) => {
-    chips.push({ label: r.name || r.title || 'Resource', href: r.website || r.url || r.link, phone: r.phone })
+    // Only add chip if we have a real name and at least a phone or website
+    const label = r.name || r.title
+    if (!label || label === 'Resource') return
+    if (!r.phone && !r.website && !r.url && !r.link) return
+    chips.push({ label, href: r.website || r.url || r.link, phone: r.phone })
   }
   for (const value of Object.values(resources)) {
     if (typeof value === 'string') continue
@@ -183,7 +187,6 @@ function HealthWellnessPanel() {
       <SubHeading title="Urgent Care &amp; ERs" />
       {ahs.urgentCare.map((c, i) => <ResourceCard key={i} name={c.name ?? ''} description={c.description} phone={c.phone} available={c.hours} note={`📍 ${c.address ?? ''}`} services={c.services} />)}
       {ahs.emergencyRooms.map((er, i) => <ResourceCard key={i} name={er.name ?? ''} phone={er.phone} note={`📍 ${er.address ?? ''}${er.note ? ` · ${er.note}` : ''}`} />)}
-
     </div>
   )
 }
@@ -266,6 +269,13 @@ export default function App() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  useEffect(() => {
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/status`)
+      .then(r => r.json())
+      .then(data => setProvider(data.provider as Provider))
+      .catch(() => setProvider('cloudflare'))
+  }, [])
 
   const handleSend = async () => {
     const text = input.trim()

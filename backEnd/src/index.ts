@@ -52,6 +52,14 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+app.get("/api/status", (req, res) => {
+  const usingCloudflare = !!(config.cloudflareAccountId && config.cloudflareApiToken);
+  res.json({
+    provider: usingCloudflare ? "cloudflare" : "openai",
+    model: usingCloudflare ? config.cloudflareModel : "gpt-4o-mini",
+  });
+});
+
 app.use(errorHandler);
 
 const PORT = config.port;
